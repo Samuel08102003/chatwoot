@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
 const WS_URL = 'wss://lomarosa-calling-production.up.railway.app';
+const UPLOAD_URL = 'https://lomarosa-calling-production.up.railway.app/upload-recording';
 
 export const useWaCallsStore = defineStore('waCalls', () => {
   const status = ref('idle'); // idle | ringing | pre_accepting | accepting | in_call | ended
@@ -14,6 +15,10 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   let audioEl = null;
   let durationTimer = null;
   let reconnectTimer = null;
+  let mediaRecorder = null;
+  let recordingChunks = [];
+  let localStream = null;
+  let remoteStream = null;
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
   function connect() {
@@ -49,10 +54,62 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   }
 
   function _onTerminated(msg) {
+    _stopRecordingAndUpload();
     status.value = 'ended';
     _stopTimer();
     _cleanupPc();
     setTimeout(() => { status.value = 'idle'; callInfo.value = null; }, 4000);
+  }
+
+  // ── Recording ────────────────────────────────────────────────────────────────
+  function _startRecording() {
+    const tracks = [
+      ...(localStream?.getAudioTracks() ?? []),
+      ...(remoteStream?.getAudioTracks() ?? []),
+    ];
+    if (!tracks.length) return;
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+      ? 'audio/ogg;codecs=opus'
+      : 'audio/webm';
+
+    recordingChunks = [];
+    const combined = new MediaStream(tracks);
+    mediaRecorder = new MediaRecorder(combined, { mimeType });
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordingChunks.push(e.data);
+    };
+    mediaRecorder.start(1000);
+  }
+
+  function _stopRecordingAndUpload() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+    const from = callInfo.value?.from ?? '';
+    const mimeType = mediaRecorder.mimeType;
+
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordingChunks, { type: mimeType });
+      recordingChunks = [];
+      mediaRecorder = null;
+      if (blob.size < 2000 || !from) return; // too short or no caller info
+      _uploadRecording(blob, from, mimeType);
+    };
+    mediaRecorder.stop();
+  }
+
+  function _uploadRecording(blob, from, mimeType) {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64 = reader.result.split(',')[1];
+      fetch(UPLOAD_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recording: base64, from, mimeType }),
+      }).catch(e => console.error('[waCalls] upload error', e));
+    };
+    reader.readAsDataURL(blob);
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────────
@@ -61,13 +118,14 @@ export const useWaCallsStore = defineStore('waCalls', () => {
     status.value = 'pre_accepting';
     error.value = '';
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
       pc.ontrack = (e) => {
+        remoteStream = e.streams[0];
         if (!audioEl) { audioEl = new Audio(); audioEl.autoplay = true; }
-        audioEl.srcObject = e.streams[0];
+        audioEl.srcObject = remoteStream;
       };
 
       await pc.setRemoteDescription({ type: 'offer', sdp: callInfo.value.sdp });
@@ -94,6 +152,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       _send({ type: 'call_response', action: 'accept', callId: callInfo.value.callId, phoneNumberId: callInfo.value.phoneNumberId });
       status.value = 'in_call';
       _startTimer();
+      _startRecording();
     } catch (e) {
       error.value = e.message;
       status.value = 'ringing';
@@ -112,6 +171,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   function hangUp() {
     if (!callInfo.value) return;
     _send({ type: 'call_response', action: 'terminate', callId: callInfo.value.callId, phoneNumberId: callInfo.value.phoneNumberId });
+    _stopRecordingAndUpload();
     status.value = 'ended';
     _stopTimer();
     _cleanupPc();
@@ -122,6 +182,8 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   function _cleanupPc() {
     if (pc) { pc.close(); pc = null; }
     if (audioEl) { audioEl.srcObject = null; audioEl = null; }
+    localStream = null;
+    remoteStream = null;
   }
 
   function _startTimer() {
