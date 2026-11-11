@@ -623,6 +623,13 @@ const menuItems = computed(() => {
         ]
       : []),
     {
+      name: 'WA Calls',
+      label: 'Llamadas WA',
+      icon: 'i-lucide-phone-call',
+      to: accountScopedRoute('wa_calls_index'),
+      activeOn: ['wa_calls_index'],
+    },
+    {
       name: 'Contacts',
       label: t('SIDEBAR.CONTACTS'),
       icon: 'i-lucide-contact',
