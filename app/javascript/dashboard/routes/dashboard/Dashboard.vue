@@ -24,12 +24,17 @@ const CommandBarV2 = defineAsyncComponent(
 const FloatingCallWidget = defineAsyncComponent(
   () => import('dashboard/components-next/call/FloatingCallWidget.vue')
 );
+const WaCallFloatingWidget = defineAsyncComponent(
+  () => import('dashboard/components-next/call/WaCallFloatingWidget.vue')
+);
 
 import CopilotLauncher from 'dashboard/components-next/copilot/CopilotLauncher.vue';
 import CopilotContainer from 'dashboard/components/copilot/CopilotContainer.vue';
 
 import MobileSidebarLauncher from 'dashboard/components-next/sidebar/MobileSidebarLauncher.vue';
 import { useCallsStore } from 'dashboard/stores/calls';
+import { useWaCallsStore } from 'dashboard/stores/waCalls';
+import { onMounted, onUnmounted } from 'vue';
 
 export default {
   components: {
@@ -42,6 +47,7 @@ export default {
     CopilotLauncher,
     CopilotContainer,
     FloatingCallWidget,
+    WaCallFloatingWidget,
     MobileSidebarLauncher,
   },
   setup() {
@@ -51,6 +57,10 @@ export default {
     const { width: windowWidth } = useWindowSize();
     const callsStore = useCallsStore();
     useRingingCallsOnLoad();
+
+    const waCallsStore = useWaCallsStore();
+    onMounted(() => waCallsStore.connect());
+    onUnmounted(() => waCallsStore.disconnect());
 
     return {
       uiSettings,
@@ -170,6 +180,7 @@ export default {
         />
         <CopilotContainer />
         <FloatingCallWidget v-if="hasActiveCall || hasIncomingCall" />
+        <WaCallFloatingWidget />
       </template>
       <CommandBarV2 v-if="hasCommandBarV2" :is-paywalled="isAccountPaywalled" />
       <CommandBar v-else :is-paywalled="isAccountPaywalled" />
