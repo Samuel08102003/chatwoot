@@ -21,6 +21,9 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   let remoteStream = null;
   let audioCtx = null;
   let audioDest = null;
+  let hiddenRemoteAudio = null;
+  let localSrcNode = null;
+  let remoteSrcNode = null;
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
   function connect() {
@@ -74,11 +77,19 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       ? 'audio/ogg;codecs=opus'
       : 'audio/webm';
 
-    // Use AudioContext to properly mix local + remote streams
+    // Chrome Bug #40094084: remote WebRTC streams are silent in Web Audio API
+    // unless a hidden muted <audio> element is actively pulling the stream
+    if (remoteStream) {
+      hiddenRemoteAudio = new Audio();
+      hiddenRemoteAudio.muted = true;
+      hiddenRemoteAudio.srcObject = remoteStream;
+      hiddenRemoteAudio.play().catch(() => {});
+    }
+
     audioCtx = new AudioContext();
     audioDest = audioCtx.createMediaStreamDestination();
-    if (localStream) audioCtx.createMediaStreamSource(localStream).connect(audioDest);
-    if (remoteStream) audioCtx.createMediaStreamSource(remoteStream).connect(audioDest);
+    if (localStream) { localSrcNode = audioCtx.createMediaStreamSource(localStream); localSrcNode.connect(audioDest); }
+    if (remoteStream) { remoteSrcNode = audioCtx.createMediaStreamSource(remoteStream); remoteSrcNode.connect(audioDest); }
 
     recordingChunks = [];
     mediaRecorder = new MediaRecorder(audioDest.stream, { mimeType });
@@ -189,7 +200,10 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   function _cleanupPc() {
     if (pc) { pc.close(); pc = null; }
     if (audioEl) { audioEl.srcObject = null; audioEl = null; }
+    if (hiddenRemoteAudio) { hiddenRemoteAudio.srcObject = null; hiddenRemoteAudio = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; audioDest = null; }
+    localSrcNode = null;
+    remoteSrcNode = null;
     localStream = null;
     remoteStream = null;
   }
