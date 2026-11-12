@@ -19,6 +19,8 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   let recordingChunks = [];
   let localStream = null;
   let remoteStream = null;
+  let audioCtx = null;
+  let audioDest = null;
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
   function connect() {
@@ -64,11 +66,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   // ── Recording ────────────────────────────────────────────────────────────────
   function _startRecording() {
     if (mediaRecorder) return; // already recording
-    const tracks = [
-      ...(localStream?.getAudioTracks() ?? []),
-      ...(remoteStream?.getAudioTracks() ?? []),
-    ];
-    if (!tracks.length) return;
+    if (!localStream && !remoteStream) return;
 
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
@@ -76,9 +74,14 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       ? 'audio/ogg;codecs=opus'
       : 'audio/webm';
 
+    // Use AudioContext to properly mix local + remote streams
+    audioCtx = new AudioContext();
+    audioDest = audioCtx.createMediaStreamDestination();
+    if (localStream) audioCtx.createMediaStreamSource(localStream).connect(audioDest);
+    if (remoteStream) audioCtx.createMediaStreamSource(remoteStream).connect(audioDest);
+
     recordingChunks = [];
-    const combined = new MediaStream(tracks);
-    mediaRecorder = new MediaRecorder(combined, { mimeType });
+    mediaRecorder = new MediaRecorder(audioDest.stream, { mimeType });
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) recordingChunks.push(e.data);
     };
@@ -186,6 +189,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
   function _cleanupPc() {
     if (pc) { pc.close(); pc = null; }
     if (audioEl) { audioEl.srcObject = null; audioEl = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; audioDest = null; }
     localStream = null;
     remoteStream = null;
   }
