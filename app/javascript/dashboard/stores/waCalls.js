@@ -68,8 +68,8 @@ export const useWaCallsStore = defineStore('waCalls', () => {
 
   // ── Recording ────────────────────────────────────────────────────────────────
   function _startRecording() {
-    if (mediaRecorder) return; // already recording
-    if (!localStream && !remoteStream) return;
+    if (mediaRecorder) return;
+    if (!audioCtx || !audioDest) return; // AudioContext must be created first in answer()
 
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
@@ -77,19 +77,21 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       ? 'audio/ogg;codecs=opus'
       : 'audio/webm';
 
-    // Chrome Bug #40094084: remote WebRTC streams are silent in Web Audio API
-    // unless a hidden muted <audio> element is actively pulling the stream
-    if (remoteStream) {
+    // Connect whichever streams are available to the already-running AudioContext
+    if (localStream && !localSrcNode) {
+      localSrcNode = audioCtx.createMediaStreamSource(localStream);
+      localSrcNode.connect(audioDest);
+    }
+    if (remoteStream && !remoteSrcNode) {
+      // Chrome Bug #40094084: hidden muted <audio> forces Chrome to pull remote stream
       hiddenRemoteAudio = new Audio();
       hiddenRemoteAudio.muted = true;
       hiddenRemoteAudio.srcObject = remoteStream;
       hiddenRemoteAudio.play().catch(() => {});
-    }
 
-    audioCtx = new AudioContext();
-    audioDest = audioCtx.createMediaStreamDestination();
-    if (localStream) { localSrcNode = audioCtx.createMediaStreamSource(localStream); localSrcNode.connect(audioDest); }
-    if (remoteStream) { remoteSrcNode = audioCtx.createMediaStreamSource(remoteStream); remoteSrcNode.connect(audioDest); }
+      remoteSrcNode = audioCtx.createMediaStreamSource(remoteStream);
+      remoteSrcNode.connect(audioDest);
+    }
 
     recordingChunks = [];
     mediaRecorder = new MediaRecorder(audioDest.stream, { mimeType });
@@ -108,7 +110,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       const blob = new Blob(recordingChunks, { type: mimeType });
       recordingChunks = [];
       mediaRecorder = null;
-      if (blob.size < 2000 || !from) return; // too short or no caller info
+      if (blob.size < 2000 || !from) return;
       _uploadRecording(blob, from, mimeType);
     };
     mediaRecorder.stop();
@@ -133,6 +135,12 @@ export const useWaCallsStore = defineStore('waCalls', () => {
     status.value = 'pre_accepting';
     error.value = '';
     try {
+      // Create AudioContext HERE — inside the user gesture (button click) context.
+      // Chrome requires this; contexts created later (in async callbacks) start suspended.
+      audioCtx = new AudioContext();
+      await audioCtx.resume(); // ensure it's running, not suspended
+      audioDest = audioCtx.createMediaStreamDestination();
+
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
       localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
@@ -141,7 +149,6 @@ export const useWaCallsStore = defineStore('waCalls', () => {
         remoteStream = e.streams[0];
         if (!audioEl) { audioEl = new Audio(); audioEl.autoplay = true; }
         audioEl.srcObject = remoteStream;
-        // Start recording as soon as remote audio arrives
         _startRecording();
       };
 
@@ -169,7 +176,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       _send({ type: 'call_response', action: 'accept', callId: callInfo.value.callId, phoneNumberId: callInfo.value.phoneNumberId });
       status.value = 'in_call';
       _startTimer();
-      // Fallback: start recording with at least local audio if ontrack hasn't fired yet
+      // Fallback: start recording if ontrack hasn't fired yet
       setTimeout(() => _startRecording(), 1500);
     } catch (e) {
       error.value = e.message;
