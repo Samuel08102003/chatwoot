@@ -63,6 +63,7 @@ export const useWaCallsStore = defineStore('waCalls', () => {
 
   // ── Recording ────────────────────────────────────────────────────────────────
   function _startRecording() {
+    if (mediaRecorder) return; // already recording
     const tracks = [
       ...(localStream?.getAudioTracks() ?? []),
       ...(remoteStream?.getAudioTracks() ?? []),
@@ -126,6 +127,8 @@ export const useWaCallsStore = defineStore('waCalls', () => {
         remoteStream = e.streams[0];
         if (!audioEl) { audioEl = new Audio(); audioEl.autoplay = true; }
         audioEl.srcObject = remoteStream;
+        // Start recording as soon as remote audio arrives
+        _startRecording();
       };
 
       await pc.setRemoteDescription({ type: 'offer', sdp: callInfo.value.sdp });
@@ -152,7 +155,8 @@ export const useWaCallsStore = defineStore('waCalls', () => {
       _send({ type: 'call_response', action: 'accept', callId: callInfo.value.callId, phoneNumberId: callInfo.value.phoneNumberId });
       status.value = 'in_call';
       _startTimer();
-      _startRecording();
+      // Fallback: start recording with at least local audio if ontrack hasn't fired yet
+      setTimeout(() => _startRecording(), 1500);
     } catch (e) {
       error.value = e.message;
       status.value = 'ringing';
